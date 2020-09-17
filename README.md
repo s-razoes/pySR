@@ -4,7 +4,7 @@ Simple Python3 HTTP/S server with log, redirect, bash output, IP filter, IPv6, I
 To keep it fast and mean, no request is ever read, only gets the IP and origin port.
 This means that the log will only have datetime and IPs, not much more.
 
-## arguments
+## Arguments:
 
 * location - Location to redirect to.
 * respond - Body text to respond.
@@ -21,7 +21,7 @@ This means that the log will only have datetime and IPs, not much more.
 * v6 - IPv6 mode
 * ipRT - Limit in seconds a client can re-request(0 no limit, that is also the default)
 
-## Useful for:
+## Example of usage:
 
 Respond with HTTP ok(200) on port 8080 and printout requests and errors but don't log them:
 
