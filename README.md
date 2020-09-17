@@ -23,7 +23,7 @@ This means that the log will only have datetime and IPs, not much more.
 
 ## Useful for:
 
-Respond with HTTP ok(200) on port 8080 and store the logs without a prefix in file "(datetime).log":
+Respond with HTTP ok(200) on port 8080 and printout requests and errors but don't log them:
 
 `
 python3 pySR.py
@@ -47,7 +47,7 @@ Show a page on port 8080 with SSL showing the current running python processes, 
 python3 pySR.py -cmd 'ps x|grep python' -cmdRT 10 -p 8080 -v6 -ipF 2001::*,2001:450:34f:f3:* --cert cert.pem --pKey privkey.pem -log PS
 `
 
-Show a page on port 8080 with SSL showing the content of file PS17.09.20-09.39.37.log, block IPs from making the same request in less then 2 seconds and store the logs without a prefix in file "(datetime).log":
+Show a page on port 8080 with SSL showing the content of file PS17.09.20-09.39.37.log, block IPs from making the same request in less then 2 seconds and printout requests and errors but don't log them:
 
 `
 python3 pySR.py -cmd 'cat PS17.09.20-09.39.37.log' -p 8080 --cert cert.pem --pKey privkey.pem -ipRT 2
