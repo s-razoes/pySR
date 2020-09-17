@@ -142,13 +142,13 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
                 else:
                     runNow = False
             if runNow:
-                cmdR = '<html><head><title>{}</title></head><body><h1>{}</h1>{}</body></html>'
+                cmdR = '<html><head><title>{}</title></head><body><h1>{}</h1><h2>{}</h2>{}</body></html>'
                 result = ''
                 try:
                     result = subprocess.check_output(args.cmd, shell=True, universal_newlines=True)
                 except subprocess.CalledProcessError as ex:
                     result = str(ex)
-                cmdR = cmdR.format(args.cmd,self.date_time_string(), result.replace('\n','<br><br>'))
+                cmdR = cmdR.format(args.cmd,args.cmd,self.date_time_string(), result.replace('\n','<br>'))
                 response = bytes(cmdR,'UTF8')
 
         if response:
