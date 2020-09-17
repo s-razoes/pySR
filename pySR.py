@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 import http.server
 import ssl
 from http.server import HTTPServer
@@ -21,7 +22,7 @@ parser.add_argument('-p', type=int, default=8080, help='Port to serve [Default=8
 parser.add_argument('-c', type=int, default=200, help='HTTP code to return [Default=200]')
 parser.add_argument('--cert', type=str, default='', help='Location of certificate file to use as public key in SSL connections')
 parser.add_argument('--pKey', type=str, default='', help='Location of file to use as private key in SSL connections')
-parser.add_argument('-log', type=str, default='', help='Logfile prefix.')
+parser.add_argument('-log', type=str, default='', help='Logfile prefix. If none is set, no log file will be produced only printed out.')
 parser.add_argument('-hostname', type=str, default='', help='Hostname/ip address to respond to, by default respond to all.')
 parser.add_argument('-cmd', type=str, default='', help='Command to execute and return the result')
 parser.add_argument('-cmdRT', type=int, default=0, help='Time interval where the cmd can execute again(0 to run aways... that is the default btw)')
@@ -35,6 +36,7 @@ args = parser.parse_args()
 if args.respond and args.respondF:
     print('Can only have one response argument')
     quit()
+    
 #has all the conditions for the certificates
 if args.cert != '' or args.pKey != '':
     if args.cert == '' or args.pKey =='':
@@ -64,19 +66,26 @@ timeToRun = None
 #dictionary with ip tables
 timeTable = {}
 
-#logging set up
-logger = logging.getLogger()
-logFileName = args.log+datetime.now().strftime("%d.%m.%-y-%H.%M.%S")+'.log'
-logger.setLevel(logging.DEBUG)
-log_format = '%(asctime)s: %(message)s'
-logging.basicConfig(filename=logFileName,format=log_format, datefmt='%Y-%m-%d %H:%M:%S')
+#save logs to a file
+if args.log != '':
+    #logging set up
+    logger = logging.getLogger()
+    logger.setLevel(logging.DEBUG)
+    log_format = '%(asctime)s: %(message)s'
+    logFileName = args.log+datetime.now().strftime("%d.%m.%-y-%H.%M.%S")+'.log'
+    logging.basicConfig(filename=logFileName,format=log_format, datefmt='%Y-%m-%d %H:%M:%S')
 
+def logMessage(level, str):
+    if args.log != '':
+        getattr(logger, level)(str)
+    else:
+        print('[{}]{}: {}'.format(datetime.now().strftime("%d.%m.%-y-%H.%M.%S"),level,str))
 
 class myHandler(http.server.SimpleHTTPRequestHandler):
     #this code is unreachable because the socked is never read from
     #leaving this for historic pourposes
     def do_GET(self):
-        logger.info(self.headers)
+        logMessage('info',self.headers)
         self.send_response(args.c)
         if args.location:
             self.send_header('Location',args.location)
@@ -88,7 +97,7 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
         return
     #end of unreachable code
     def log_message(self, format, *args):
-        logger.info("#%s - %s\n" % (self.client_address[0],format%args))
+        logMessage('info',("#%s - %s\n" % (self.client_address[0],format%args)))
         self.close_connection = True
         return
         
@@ -109,7 +118,7 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
             if not passed:
                 #not allowed, get out
                 self.close_connection = True
-                logger.info('Filtered: ' + str(self.client_address))
+                logMessage('info','Filtered: ' + str(self.client_address))
                 return
 
         if args.ipRT > 0:
@@ -117,13 +126,13 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
                 timeTable[self.client_address[0]] = datetime.now() + timedelta(seconds = args.ipRT)
             else:
                 if timeTable[self.client_address[0]] >=  datetime.now():
-                    logger.info(str(self.client_address) + ' - limited response, closed connection')
+                    logMessage('info',str(self.client_address) + ' - limited response, closed connection')
                     self.close_connection = True
                     return
                 else:
                     timeTable[self.client_address[0]] = datetime.now() + timedelta(seconds = args.ipRT)
 
-        logger.info(str(self.client_address))
+        logMessage('info',str(self.client_address))
         self.send_response(args.c)
 
         if args.location:
@@ -153,10 +162,18 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
 
         if response:
             self.send_header('content-length',len(response))
-        self.end_headers()
-        if response:
-            self.wfile.write(response)
-        self.wfile.flush()
+        
+        #try because client could close the connection before the server could reply back
+        try:
+            self.end_headers()
+        
+            if response:
+                self.wfile.write(response)
+            self.wfile.flush()
+        except ConnectionResetError as Exc:
+            logMessage('error',"Exception: " + Exc)
+            return
+            
         self.close_connection = True
         return
 
@@ -193,23 +210,19 @@ try:
         txt=txt+' respond with file '+args.respondF
     
     print(txt)
-    logger.info(txt)
+    logMessage('info',txt)
     
-    #cycle because of Errno 104 - connection refused by peer
-    while True:
-        try:
-            pywebserver.serve_forever()
-        except Exception as e:
-            logger.error('Exception:'+exc)
+    #here we go!
+    pywebserver.serve_forever()
 
 except KeyboardInterrupt:
     endStr = 'Interrupt received, shutting down the web server'
     print(endStr)
-    logger.info(endStr)
+    logMessage('info',endStr)
     pywebserver.socket.close()
 
 except Exception as exc:
-    logger.error('Exception:'+exc)
+    logMessage('error','Exception:'+exc)
 
 
-logger.info('Ended!')
+logMessage('info','Ended!')
