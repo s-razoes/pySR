@@ -55,3 +55,8 @@ python3 pySR.py -cmd 'cat PS17.09.20-09.39.37.log' -p 8080 --cert cert.pem --pKe
 
 
 If you have any suggestions, please send me a message :)
+
+
+##TODO
+
+- don't log anything if log parameter is not present
