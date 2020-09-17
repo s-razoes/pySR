@@ -13,7 +13,7 @@ This means that the log will only have datetime and IPs, not much more.
 * c - HTTP code to return [Default=200]
 * cert - Location of certificate file to use as public key in SSL connections
 * pKey - Location of file to use as private key in SSL connections
-* log - Logfile prefix.
+* log - Logfile prefix. If none is present then will not produce log file and will output the messages instead.
 * hostname - Hostname/ip address to respond to, by default respond to all.
 * cmd - Command to execute and return the result
 * cmdRT - Time interval where the cmd can execute again(0 to run aways... that is the default btw)
@@ -55,8 +55,3 @@ python3 pySR.py -cmd 'cat PS17.09.20-09.39.37.log' -p 8080 --cert cert.pem --pKe
 
 
 If you have any suggestions, please send me a message :)
-
-
-## TODO
-
-- don't log anything if log parameter is not present
