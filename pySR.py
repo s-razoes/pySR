@@ -9,6 +9,7 @@ import socket
 import subprocess
 import fnmatch
 import mimetypes
+import traceback
 
 serverSoftware = 'Noyb' #Return this in the server response... why?
 #ok... want a better redirector that does all of this but more robust?
@@ -170,8 +171,8 @@ class myHandler(http.server.SimpleHTTPRequestHandler):
             if response:
                 self.wfile.write(response)
             self.wfile.flush()
-        except ConnectionResetError as Exc:
-            logMessage('error',"Exception: " + Exc)
+        except ConnectionResetError:
+            logMessage('error', 'Closed connection before reply: {}'.format(str(self.client_address)))
             return
             
         self.close_connection = True
@@ -221,8 +222,8 @@ except KeyboardInterrupt:
     logMessage('info',endStr)
     pywebserver.socket.close()
 
-except Exception as exc:
-    logMessage('error','Exception:'+exc)
+except Exception as Exc:
+    logMessage('error',''.join(traceback.format_exception(etype=type(Exc), value=Exc, tb=Exc.__traceback__)) )
 
 
 logMessage('info','Ended!')
