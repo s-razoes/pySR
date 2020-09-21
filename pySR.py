@@ -1,11 +1,10 @@
 #!/usr/bin/python3
-import http.server
 import ssl
-from http.server import HTTPServer
 import logging
 from datetime import datetime, timedelta
 import argparse
 import socket
+from socket import *
 import subprocess
 import fnmatch
 import mimetypes
@@ -52,6 +51,7 @@ if args.ipF:
 
 responseType = 'text/html'
 response = None
+responseLen = ''
 
 if args.respond:
     response = bytes(args.respond, 'UTF8')
@@ -60,6 +60,7 @@ if args.respondF:
     f = open(args.respondF, 'rb')
     response = f.read()
     f.close()
+    responseLen = str(len(response))
     responseType = mimetypes.guess_type(args.respondF)[0]
 
 #time control for command to execute
@@ -82,127 +83,29 @@ def logMessage(level, str):
     else:
         print('[{}]{}: {}'.format(datetime.now().strftime("%d.%m.%-y-%H.%M.%S"),level,str))
 
-class myHandler(http.server.SimpleHTTPRequestHandler):
-    #this code is unreachable because the socked is never read from
-    #leaving this for historic pourposes
-    def do_GET(self):
-        logMessage('info',self.headers)
-        self.send_response(args.c)
-        if args.location:
-            self.send_header('Location',args.location)
-        self.end_headers()
-        if response:
-            self.wfile.write(response)
-        self.wfile.flush()
-        self.close_connection = True
-        return
-    #end of unreachable code
-    def log_message(self, format, *args):
-        logMessage('info',("#%s - %s\n" % (self.client_address[0],format%args)))
-        self.close_connection = True
-        return
-        
-    def send_response(self, code, message=None):
-        #self.log_request(code)
-        self.request_version = 'HTTP/1.1'
-        self.send_response_only(code, message)
-        self.send_header('Server', serverSoftware)
-        self.send_header('Date', self.date_time_string())
-        return
-    def handle_one_request(self):
-        #is filter not allowed
-        if args.ipF:
-            passed = False
-            for ipMatch in IPsFilter:
-                if fnmatch.fnmatchcase(self.client_address[0],ipMatch):
-                    passed = True
-            if not passed:
-                #not allowed, get out
-                self.close_connection = True
-                logMessage('info','Filtered: ' + str(self.client_address))
-                return
-
-        if args.ipRT > 0:
-            if self.client_address[0] not in timeTable:
-                timeTable[self.client_address[0]] = datetime.now() + timedelta(seconds = args.ipRT)
-            else:
-                if timeTable[self.client_address[0]] >=  datetime.now():
-                    logMessage('info',str(self.client_address) + ' - limited response, closed connection')
-                    self.close_connection = True
-                    return
-                else:
-                    timeTable[self.client_address[0]] = datetime.now() + timedelta(seconds = args.ipRT)
-
-        logMessage('info',str(self.client_address))
-        self.send_response(args.c)
-
-        if args.location:
-            self.send_header('Location',args.location)
-
-        self.send_header('content-type',responseType)
-        global response
-
-        if args.cmd:
-            runNow = True
-            if args.cmdRT > 0:
-                global timeToRun
-                if timeToRun is None or timeToRun < datetime.now() and args.cmdRT > 0:
-                    timeToRun = datetime.now() + timedelta(seconds = args.cmdRT)
-                    runNow = True
-                else:
-                    runNow = False
-            if runNow:
-                cmdR = '<html><head><title>{}</title></head><body><h1>{}</h1><h2>{}</h2>{}</body></html>'
-                result = ''
-                try:
-                    result = subprocess.check_output(args.cmd, shell=True, universal_newlines=True)
-                except subprocess.CalledProcessError as ex:
-                    result = str(ex)
-                cmdR = cmdR.format(args.cmd,args.cmd,self.date_time_string(), result.replace('\n','<br>'))
-                response = bytes(cmdR,'UTF8')
-
-        if response:
-            self.send_header('content-length',len(response))
-        
-        #try because client could close the connection before the server could reply back
-        try:
-            self.end_headers()
-        
-            if response:
-                self.wfile.write(response)
-            self.wfile.flush()
-        except ConnectionResetError:
-            logMessage('error', 'Closed connection before reply: {}'.format(str(self.client_address)))
-            return
-            
-        self.close_connection = True
-        return
-
-
-class HTTPServerV6(HTTPServer):
-    address_family = socket.AF_INET6
 
 try:
+    netType = AF_INET
     if args.v6:
         hostName = args.hostname
         if hostName == '':
             hostName = '::'
-        pywebserver = HTTPServerV6((hostName, args.p), myHandler)
-    else:
-        pywebserver = HTTPServer((args.hostname, args.p), myHandler)
-
-    pywebserver.socket.settimeout(0.1)
+        netType = AF_INET6
+        
+    serverSocket = socket(netType, SOCK_STREAM)
 
     txt='Running '+args.hostname+' on port '+str(args.p)+' returning code '+str(args.c)
     
     if args.location:
         txt=txt+' and location to '+args.location
-
+    
     if args.cert:
-        pywebserver.socket = ssl.wrap_socket (pywebserver.socket, 
-            keyfile=args.pKey, 
-            certfile=args.cert, server_side=True)
+        serverSocket = ssl.wrap_socket (serverSocket, keyfile=args.pKey, certfile=args.cert, server_side=True, do_handshake_on_connect=True, suppress_ragged_eofs=True)
         txt=txt+' with SSL'
+    
+    #Prepare a sever socket
+    serverSocket.bind(('', args.p))
+    serverSocket.listen(10)
     
     if args.respond:
         txt=txt+' respond with >'+args.respond
@@ -213,17 +116,109 @@ try:
     print(txt)
     logMessage('info',txt)
     
-    #here we go!
-    pywebserver.serve_forever()
+    #serve until interrupted
+    while True:
+        try:
+            connectionSocket, addr = serverSocket.accept()
+        except ssl.SSLError:
+            logMessage('error','Request and denied non-secure connection')
+            continue
+        except OSError as ex:#[Errno 0] Error
+            logMessage('error','Accepting socket: ' + str(ex))
+            continue
+            
+        try:
+            bMessage = connectionSocket.recv(65536)
+            message = bMessage.decode("utf-8")
+            logMessage('info', str(addr) + '\r\n' + message)
+            
+            proceed = True
+            header = None
+            #is filter not allowed
+            if args.ipF:
+                passed = False
+                for ipMatch in IPsFilter:
+                    if fnmatch.fnmatchcase(addr[0],ipMatch):
+                        passed = True
+                if not passed:
+                    #not allowed, get out
+                    proceed = False
+                    logMessage('info','Filtered: ' + str(addr))
+
+            if args.ipRT > 0:
+                if addr[0] not in timeTable:
+                    timeTable[addr[0]] = datetime.now() + timedelta(seconds = args.ipRT)
+                else:
+                    if timeTable[addr[0]] >=  datetime.now():
+                        logMessage('info',str(addr) + ' - limited response, closed connection')
+                        proceed = False
+                    else:
+                        timeTable[addr[0]] = datetime.now() + timedelta(seconds = args.ipRT)
+                        
+            
+            if proceed:
+                #construct header
+                header = 'HTTP/1.0 '
+                if args.c:
+                    header += str(args.c) + '\r\n'
+                else:
+                    header += '200 OK\r\n'
+                    
+                if args.location:
+                    header += 'Location: ' + args.location + '\r\n'
+
+                header += 'content-type: ' + responseType + '\r\n'
+                header += 'Server: ' + serverSoftware + '\r\nConnection: close\r\n'
+                #add size to header
+                if responseLen != '':
+                    header += 'content-length: ' + responseLen + '\r\n'
+                #send this part already
+                connectionSocket.send(bytes(header,'UTF8'))
+                header = ''
+                if args.cmd:
+                    runNow = True
+                    if args.cmdRT > 0:
+                        if timeToRun is None or timeToRun < datetime.now() and args.cmdRT > 0:
+                            timeToRun = datetime.now() + timedelta(seconds = args.cmdRT)
+                            runNow = True
+                        else:
+                            runNow = False
+                    if runNow:
+                        cmdR = '<html><head><title>{}</title></head><body><h1>{}</h1><h2>{}</h2>{}</body></html>'
+                        result = ''
+                        try:
+                            result = subprocess.check_output(args.cmd, shell=True, universal_newlines=True)
+                        except subprocess.CalledProcessError as ex:
+                            result = str(ex)
+                        cmdR = cmdR.format(args.cmd,args.cmd,str(datetime.now()), result.replace('\n','<br>'))
+                        response = bytes(cmdR,'UTF8')
+                        #content should only exist when it's not here, so there you go
+                        header = 'content-length: ' + str(len(response)) + '\r\n'
+            
+                #Send the content of the requested file to the client
+                data = bytes(header +'\r\n','UTF8')
+                if response:
+                    data += response
+                connectionSocket.send(data)
+                
+            connectionSocket.close()
+        except IOError:
+            logMessage('error', 'IO: {}'.format(str(Exc)))
+        except Exception as Exc:
+            logMessage('error', 'When replying: {}'.format(str(Exc)))
+        except ConnectionResetError:
+            logMessage('error', 'Closed connection before reply: {}'.format(str(addr)))
+        finally:
+            connectionSocket.close()
 
 except KeyboardInterrupt:
     endStr = 'Interrupt received, shutting down the web server'
     print(endStr)
     logMessage('info',endStr)
-    pywebserver.socket.close()
-
 except Exception as Exc:
     logMessage('error',''.join(traceback.format_exception(etype=type(Exc), value=Exc, tb=Exc.__traceback__)) )
-
+finally:
+    connectionSocket.close()
+    serverSocket.close()
 
 logMessage('info','Ended!')
