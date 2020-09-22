@@ -9,6 +9,7 @@ import subprocess
 import fnmatch
 import mimetypes
 import traceback
+from http import HTTPStatus
 
 serverSoftware = 'Noyb' #Return this in the server response... why?
 #ok... want a better redirector that does all of this but more robust?
@@ -16,6 +17,8 @@ serverSoftware = 'Noyb' #Return this in the server response... why?
 
 parser = argparse.ArgumentParser(prog='redirect')
 parser.add_argument('-location', type=str, default='', help='Location to redirect to.')
+parser.add_argument('-sameURL', action='store_true', help='When new location, keep the path (the path and file name in this example: http://example.com/PATH/XXX.JPG, the default is no)')
+parser.add_argument('-upgradeHost', action='store_true', help='With this option it will keep the path and subdomains and upgrade host to HTTPS')
 parser.add_argument('-respond', type=str, default='', help='Body text to respond.')
 parser.add_argument('-respondF', type=str, default='', help='File to respond.')
 parser.add_argument('-p', type=int, default=8080, help='Port to serve [Default=8080]')
@@ -36,7 +39,23 @@ args = parser.parse_args()
 if args.respond and args.respondF:
     print('Can only have one response argument')
     quit()
-    
+
+if args.location and args.upgradeHost:
+    print('upgradeHost and location are not compatible parameters')
+    quit()
+newLocation = ''
+
+#if there is no code but it's to upgrade the host, then use http code 301 = redirect
+HTTPCode = args.c
+if args.upgradeHost and args.c == 200:
+    HTTPCode = 301
+
+try:
+    HeaderFirstLine = 'HTTP/1.0 {} {}\r\n'.format(HTTPCode,HTTPStatus(HTTPCode).phrase)
+except ValueError:
+    print('Invalid HTTP Code: ' + HTTPCode)
+    quit()
+
 #has all the conditions for the certificates
 if args.cert != '' or args.pKey != '':
     if args.cert == '' or args.pKey =='':
@@ -77,12 +96,24 @@ if args.log != '':
     logFileName = args.log+datetime.now().strftime("%d.%m.%-y-%H.%M.%S")+'.log'
     logging.basicConfig(filename=logFileName,format=log_format, datefmt='%Y-%m-%d %H:%M:%S')
 
+#definitions
+
 def logMessage(level, str):
     if args.log != '':
         getattr(logger, level)(str)
     else:
         print('[{}]{}: {}'.format(datetime.now().strftime("%d.%m.%-y-%H.%M.%S"),level,str))
 
+class NotAllowedException(Exception):
+    """Not allowed to request here"""
+    pass
+
+class BadRequestException(Exception):
+    """Request was not valid"""
+    pass
+
+
+#runtime code
 
 try:
     netType = AF_INET
@@ -94,10 +125,14 @@ try:
         
     serverSocket = socket(netType, SOCK_STREAM)
 
-    txt='Running '+args.hostname+' on port '+str(args.p)+' returning code '+str(args.c)
+    txt='Running '+args.hostname+' on port '+str(args.p)+' returning code '+str(HTTPCode)
     
     if args.location:
         txt=txt+' and location to '+args.location
+        newLocation = args.location
+        #if ends with '/' then remove it
+        if newLocation[-1] == '/':
+            newLocation = newLocation[:len(newLocation)-1]
     
     if args.cert:
         serverSocket = ssl.wrap_socket (serverSocket, keyfile=args.pKey, certfile=args.cert, server_side=True, do_handshake_on_connect=True, suppress_ragged_eofs=True)
@@ -131,9 +166,45 @@ try:
             bMessage = connectionSocket.recv(65536)
             message = bMessage.decode("utf-8")
             logMessage('info', str(addr) + '\r\n' + message)
-            
+
             proceed = True
             header = None
+            requestedPath = '/'
+            requestType = None
+            requestDict = {}
+            
+            #only if first 3 characters are GET_ then split until the HTTP            
+            #try to extract the requested path
+            #onyl try if it's bigger then GET / HTTP/1.1
+            if len(message) > 14:
+                lines = message.split('\r\n')
+                #first line is the type of request
+                reqLine = lines[0].strip().split(' ')
+                
+                if len(reqLine) >= 3:
+                    requestType = reqLine[0].strip()
+                    if requestType != 'GET' and requestType != 'POST':
+                        raise BadRequestException('Request type not allowed:' + requestType)
+                    requestedPath = reqLine[1]
+                    #fill the rest of the request dictionary
+                    for line in lines[1:]:
+                        line = line.strip()
+                        if line == '':
+                            continue
+                        head, value = line.split(': ',1)
+                        requestDict[head] = value
+                else:
+                    raise BadRequestException('Don\'t understand what was requested.')
+            else:
+                raise BadRequestException('Invalid request')
+            
+            if args.upgradeHost and 'Host' in requestDict:
+                #ends in port 80 then remove that
+                if requestDict['Host'][-3:] == ':80':
+                    requestDict['Host'] = requestDict['Host'][:3]
+                newLocation = 'https://' + requestDict['Host']
+                logMessage('info','Redirecting to ' + newLocation)
+            
             #is filter not allowed
             if args.ipF:
                 passed = False
@@ -142,30 +213,32 @@ try:
                         passed = True
                 if not passed:
                     #not allowed, get out
-                    proceed = False
-                    logMessage('info','Filtered: ' + str(addr))
+                    #logMessage('info','Filtered: ' + str(addr))
+                    raise NotAllowedException('Filtered: ' + str(addr))
 
             if args.ipRT > 0:
                 if addr[0] not in timeTable:
                     timeTable[addr[0]] = datetime.now() + timedelta(seconds = args.ipRT)
                 else:
                     if timeTable[addr[0]] >=  datetime.now():
-                        logMessage('info',str(addr) + ' - limited response, closed connection')
-                        proceed = False
+                        raise NotAllowedException(str(addr) + ' - limited response, closed connection')
+                        #proceed = False
                     else:
                         timeTable[addr[0]] = datetime.now() + timedelta(seconds = args.ipRT)
                         
             
             if proceed:
                 #construct header
-                header = 'HTTP/1.0 '
-                if args.c:
-                    header += str(args.c) + '\r\n'
-                else:
-                    header += '200 OK\r\n'
+                header = HeaderFirstLine
                     
-                if args.location:
-                    header += 'Location: ' + args.location + '\r\n'
+                #new location option
+                if newLocation != '':
+                    header += 'Location: '
+                    #if it's to keep the path
+                    if (args.sameURL or args.upgradeHost) and requestedPath != '/':
+                        header += newLocation + requestedPath + '\r\n'
+                    else:
+                        header += newLocation + '\r\n'
 
                 header += 'content-type: ' + responseType + '\r\n'
                 header += 'Server: ' + serverSoftware + '\r\nConnection: close\r\n'
@@ -206,6 +279,10 @@ try:
             logMessage('error', 'IO: {}'.format(str(Exc)))
         except Exception as Exc:
             logMessage('error', 'When replying: {}'.format(str(Exc)))
+        except BadRequestException as Exc:
+            logMessage('error', 'Bad request: {}'.format(str(Exc)))
+        except NotAllowedException as Exc:
+            logMessage('error', 'Not allowed: {}'.format(str(Exc)))
         except ConnectionResetError:
             logMessage('error', 'Closed connection before reply: {}'.format(str(addr)))
         finally:
