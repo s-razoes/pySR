@@ -1,12 +1,14 @@
 # pySR
-Simple Python3 HTTP/S server with log, redirect, bash output, IP filter, IPv6, IP timeout.
+Python3 HTTP/S server with log, redirect, command execution, IP filter, IPv6 support, IP timeout, simple file server
 
-To keep it fast and mean, no request is ever read, only gets the IP and origin port.
-This means that the log will only have datetime and IPs, not much more.
+To keep it fast and mean, it was built from socket level up.
+
 
 ## Arguments:
 
 * location - Location to redirect to.
+* sameURL - When new location, keep the path (the path and file name in this example: http://example.com/PATH/XXX.JPG) [Default no]
+* upgradeHost - With this option it will keep the path and subdomains and upgrade host to HTTPS [Default no]
 * respond - Body text to respond.
 * respondF - File to respond.
 * p - Port to serve [Default=8080]
@@ -23,13 +25,19 @@ This means that the log will only have datetime and IPs, not much more.
 
 ## Example of usage:
 
-Respond with HTTP ok(200) on port 8080 and printout requests and errors but don't log them:
+Respond with HTTP ok(200) on port 8080 and printout requests and only print out info:
 
 `
 python3 pySR.py
 `
 
-Redirect calls(code 301) from port 80(HTTP) to 443(HTTPs) and store logs in file "redirect(datetime).log":
+Redirect request(code 301) from port 80(HTTP) to 443(HTTPs) on the same host and parameters and store logs in file "upg(datetime).log":
+
+`
+python3 pySR.py -p 80 -upgradeHost -log upg
+`
+
+Redirect requests(code 301) from port 80(HTTP) to (https://example.com) and store logs in file "redirect(datetime).log":
 
 `
 python3 pySR.py -p 80 -c 301 -location https://example.com -log redirect
@@ -47,7 +55,7 @@ Show a page on port 8080 with SSL showing the current running python processes, 
 python3 pySR.py -cmd 'ps x|grep python' -cmdRT 10 -p 8080 -v6 -ipF 2001::*,2001:450:34f:f3:* --cert cert.pem --pKey privkey.pem -log PS
 `
 
-Show a page on port 8080 with SSL showing the content of file PS17.09.20-09.39.37.log, block IPs from making the same request in less then 2 seconds and printout requests and errors but don't log them:
+Show a page on port 8080 with SSL showing the content of file PS17.09.20-09.39.37.log, block IPs from making the same request in less then 2 seconds and printout requests and and only print out info:
 
 `
 python3 pySR.py -cmd 'cat PS17.09.20-09.39.37.log' -p 8080 --cert cert.pem --pKey privkey.pem -ipRT 2
