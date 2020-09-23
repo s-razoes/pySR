@@ -63,8 +63,8 @@ python3 pySR.py -cmd 'cat PS17.09.20-09.39.37.log' -p 8080 --cert cert.pem --pKe
 
 ## TODO
 
-Separate by files
-Stub to handle GETs and POSTs
+- Separate by files
+- Stub to handle GETs and POSTs
 
 
 If you have any suggestions, please send me a message :)
