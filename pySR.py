@@ -9,7 +9,9 @@ import subprocess
 import fnmatch
 import mimetypes
 import traceback
+import chardet
 from http import HTTPStatus
+import html
 
 serverSoftware = 'Noyb' #Return this in the server response... why?
 #ok... want a better redirector that does all of this but more robust?
@@ -112,7 +114,6 @@ class BadRequestException(Exception):
     """Request was not valid"""
     pass
 
-
 #runtime code
 
 try:
@@ -140,7 +141,7 @@ try:
     
     #Prepare a sever socket
     serverSocket.bind(('', args.p))
-    serverSocket.listen(10)
+    serverSocket.listen(1)
     
     if args.respond:
         txt=txt+' respond with >'+args.respond
@@ -163,8 +164,28 @@ try:
             continue
             
         try:
-            bMessage = connectionSocket.recv(65536)
-            message = bMessage.decode("utf-8")
+            bMessage = b''
+            matchCount = 0
+            endHeaderString = b'\r\n\r\n'
+            endHeaderStringSize = 4
+            while True:
+                bit = connectionSocket.recv(1)
+                if bit[0] == endHeaderString[matchCount]:
+                    matchCount += 1
+                    if matchCount == endHeaderStringSize:
+                        break
+                else:
+                    matchCount = 0
+                bMessage += bit
+            #try decoding for UTF8 works most of the time
+            try:
+                message = bMessage.decode("utf-8")
+            except UnicodeDecodeError:
+                try:#if it failed, try to find the encoding
+                    message = message.decode(chardet.detect(message)['encoding'])
+                except Exception:
+                    raise BadRequestException('Can\'t decode request: '+ message)
+                    
             logMessage('info', str(addr) + '\r\n' + message)
 
             proceed = True
@@ -172,6 +193,8 @@ try:
             requestedPath = '/'
             requestType = None
             requestDict = {}
+            requestBody = None
+            recvBody = False
             
             #only if first 3 characters are GET_ then split until the HTTP            
             #try to extract the requested path
@@ -186,22 +209,27 @@ try:
                     if requestType != 'GET' and requestType != 'POST':
                         raise BadRequestException('Request type not allowed:' + requestType)
                     requestedPath = reqLine[1]
-                    #fill the rest of the request dictionary
-                    for line in lines[1:]:
-                        line = line.strip()
-                        if line == '':
-                            continue
-                        head, value = line.split(': ',1)
-                        requestDict[head] = value
                 else:
                     raise BadRequestException('Don\'t understand what was requested.')
             else:
                 raise BadRequestException('Invalid request')
             
+            #fill the request dictionary
+            headerValueSplit = ': '
+            for line in lines[1:]:
+                line = line.strip()
+                if line == '':#signals the end of the header
+                    break
+                if headerValueSplit in line:
+                    head, value = line.split(headerValueSplit,1)
+                else:
+                    raise BadRequestException('What kind of header is this: ' + line)
+                requestDict[head] = value            
+            
             if args.upgradeHost and 'Host' in requestDict:
                 #ends in port 80 then remove that
                 if requestDict['Host'][-3:] == ':80':
-                    requestDict['Host'] = requestDict['Host'][:3]
+                    requestDict['Host'] = requestDict['Host'][0:-3]
                 newLocation = 'https://' + requestDict['Host']
                 logMessage('info','Redirecting to ' + newLocation)
             
@@ -226,65 +254,103 @@ try:
                     else:
                         timeTable[addr[0]] = datetime.now() + timedelta(seconds = args.ipRT)
                         
-            
-            if proceed:
-                #construct header
-                header = HeaderFirstLine
-                    
-                #new location option
-                if newLocation != '':
-                    header += 'Location: '
-                    #if it's to keep the path
-                    if (args.sameURL or args.upgradeHost) and requestedPath != '/':
-                        header += newLocation + requestedPath + '\r\n'
-                    else:
-                        header += newLocation + '\r\n'
-
-                header += 'content-type: ' + responseType + '\r\n'
-                header += 'Server: ' + serverSoftware + '\r\nConnection: close\r\n'
-                #add size to header
-                if responseLen != '':
-                    header += 'content-length: ' + responseLen + '\r\n'
-                #send this part already
-                connectionSocket.send(bytes(header,'UTF8'))
-                header = ''
-                if args.cmd:
-                    runNow = True
-                    if args.cmdRT > 0:
-                        if timeToRun is None or timeToRun < datetime.now() and args.cmdRT > 0:
-                            timeToRun = datetime.now() + timedelta(seconds = args.cmdRT)
-                            runNow = True
-                        else:
-                            runNow = False
-                    if runNow:
-                        cmdR = '<html><head><title>{}</title></head><body><h1>{}</h1><h2>{}</h2>{}</body></html>'
-                        result = ''
-                        try:
-                            result = subprocess.check_output(args.cmd, shell=True, universal_newlines=True)
-                        except subprocess.CalledProcessError as ex:
-                            result = str(ex)
-                        cmdR = cmdR.format(args.cmd,args.cmd,str(datetime.now()), result.replace('\n','<br>'))
-                        response = bytes(cmdR,'UTF8')
-                        #content should only exist when it's not here, so there you go
-                        header = 'content-length: ' + str(len(response)) + '\r\n'
-            
-                #Send the content of the requested file to the client
-                data = bytes(header +'\r\n','UTF8')
-                if response:
-                    data += response
-                connectionSocket.send(data)
+        
+            #construct header
+            header = HeaderFirstLine
                 
+            #new location option
+            if newLocation != '':
+                header += 'Location: '
+                #if it's to keep the path
+                if (args.sameURL or args.upgradeHost) and requestedPath != '/':
+                    header += newLocation + requestedPath + '\r\n'
+                else:
+                    header += newLocation + '\r\n'
+            else:
+                #it's not a redirect then extract header, body from request
+				
+                #TODO - GET
+                
+                #TODO - POST
+                if requestType == 'POST':
+                    #get the message body?
+                    if 'Content-Length' in requestDict:
+                        requestBodySize=int(requestDict['Content-Length'], base=10)
+                        if requestBodySize > 0:
+                            requestBody = b''
+                            try:
+                                #to not hold the connection if it fails to receive the rest
+                                connectionSocket.settimeout(1)
+                                #read the rest of the socket
+                                requestBody = connectionSocket.recv(65536)
+                                
+                                while requestBodySize > len(requestBody):
+                                    #more body incoming
+                                    requestBody += connectionSocket.recv(65536)
+                                
+                            except Exception as Exc:
+                                logMessage('error', 'Reading body: {}'.format(str(Exc)))
+                                
+                            try:
+                                if 'Content-Type' in requestDict:
+                                    cType = requestDict['Content-Type'].lower()
+                                    if 'text' in cType and 'charset=' in cType:
+                                        charSet = cType.split('charset=')[1]
+                                        requestTxtBody = (requestBody.decode(charSet)).strip()
+                                        logMessage('info','Text body: {}'.format(requestTxtBody))
+                            except Exception as Exc:
+                                logMessage('error', 'Decode txt body: {}'.format(str(Exc)))
+                                
+                            connectionSocket.settimeout(0)
+
+            header += 'content-type: ' + responseType + '\r\n'
+            header += 'Server: ' + serverSoftware + '\r\nConnection: Close\r\n'
+            #add size to header
+            if responseLen != '':
+                header += 'content-length: ' + responseLen + '\r\n'
+            #send this part already
+            connectionSocket.send(bytes(header,'UTF8'))
+            header = ''
+            
+            if args.cmd:
+                runNow = True
+                if args.cmdRT > 0:
+                    if timeToRun is None or timeToRun < datetime.now() and args.cmdRT > 0:
+                        timeToRun = datetime.now() + timedelta(seconds = args.cmdRT)
+                        runNow = True
+                    else:
+                        runNow = False
+                if runNow:
+                    cmdR = '<html><head><meta charset="utf-8"><title>{}</title></head><body><h1>{}</h1><h2>{}</h2>{}</body></html>'
+                    result = ''
+                    try:
+                        result = subprocess.check_output(args.cmd, shell=True, universal_newlines=True)
+                    except subprocess.CalledProcessError as ex:
+                        result = str(ex)
+                    result = html.escape(result)
+                    result = result.replace('\n','<br>')
+                    cmdR = cmdR.format(args.cmd,args.cmd,str(datetime.now()), result)
+                    response = bytes(cmdR,'UTF8')
+                    #content should only exist when it's not here, so there you go
+                    header = 'content-length: ' + str(len(response)) + '\r\n'
+        
+            #Send the content of the requested file to the client
+            data = bytes(header +'\r\n','UTF8')
+            if response:
+                data += response
+                
+            connectionSocket.send(data)
             connectionSocket.close()
         except IOError:
             logMessage('error', 'IO: {}'.format(str(Exc)))
-        except Exception as Exc:
-            logMessage('error', 'When replying: {}'.format(str(Exc)))
         except BadRequestException as Exc:
             logMessage('error', 'Bad request: {}'.format(str(Exc)))
         except NotAllowedException as Exc:
             logMessage('error', 'Not allowed: {}'.format(str(Exc)))
         except ConnectionResetError:
             logMessage('error', 'Closed connection before reply: {}'.format(str(addr)))
+        except Exception as Exc:
+            logMessage('error', 'Exception: {}'.format(str(Exc)))
         finally:
             connectionSocket.close()
 
