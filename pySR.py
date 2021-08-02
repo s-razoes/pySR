@@ -3,7 +3,6 @@ import ssl
 import logging
 from datetime import datetime, timedelta
 import argparse
-import socket
 from socket import *
 import subprocess
 import fnmatch
@@ -70,19 +69,19 @@ if args.ipF:
     IPsFilter = args.ipF.split(',')
     IPsFilter = [x.strip() for x in IPsFilter]
 
-responseType = 'text/html'
-response = None
-responseLen = ''
+gResponseType = 'text/html'
+gResponse = None
+gResponseLen = ''
 
 if args.respond:
-    response = bytes(args.respond, 'UTF8')
+    gResponse = bytes(args.respond, 'UTF8')
 
 if args.respondF:
     f = open(args.respondF, 'rb')
-    response = f.read()
+    gResponse = f.read()
     f.close()
-    responseLen = str(len(response))
-    responseType = mimetypes.guess_type(args.respondF)[0]
+    gResponseLen = str(len(gResponse))
+    gResponseType = mimetypes.guess_type(args.respondF)[0]
 
 #time control for command to execute
 timeToRun = None
@@ -125,7 +124,6 @@ try:
         netType = AF_INET6
         
     serverSocket = socket(netType, SOCK_STREAM)
-
     txt='Running '+args.hostname+' on port '+str(args.p)+' returning code '+str(HTTPCode)
     
     if args.location:
@@ -157,7 +155,7 @@ try:
         try:
             connectionSocket, addr = serverSocket.accept()
         except ssl.SSLError:
-            logMessage('error','Request and denied non-secure connection')
+            logMessage('error','Request denied non-secure connection')
             continue
         except OSError as ex:#[Errno 0] Error
             logMessage('error','Accepting socket: ' + str(ex))
@@ -168,8 +166,15 @@ try:
             matchCount = 0
             endHeaderString = b'\r\n\r\n'
             endHeaderStringSize = 4
+
+            # to not hold the connection if it fails to receive the rest
+            connectionSocket.settimeout(1.0)
             while True:
                 bit = connectionSocket.recv(1)
+                if len(bit) == 0:
+                    break
+                    #reception of message ended
+                    #probably invalid request, but proceed anyway
                 if bit[0] == endHeaderString[matchCount]:
                     matchCount += 1
                     if matchCount == endHeaderStringSize:
@@ -177,17 +182,10 @@ try:
                 else:
                     matchCount = 0
                 bMessage += bit
-            #try decoding for UTF8 works most of the time
-            try:
-                message = bMessage.decode("utf-8")
-            except UnicodeDecodeError:
-                try:#if it failed, try to find the encoding
-                    message = message.decode(chardet.detect(message)['encoding'])
-                except Exception:
-                    raise BadRequestException('Can\'t decode request: '+ message)
-                    
-            logMessage('info', str(addr) + '\r\n' + message)
 
+            response = gResponse
+            responseLen = gResponseLen
+            responseType = gResponseType
             proceed = True
             header = None
             requestedPath = '/'
@@ -199,7 +197,20 @@ try:
             #only if first 3 characters are GET_ then split until the HTTP            
             #try to extract the requested path
             #onyl try if it's bigger then GET / HTTP/1.1
-            if len(message) > 14:
+            if len(bMessage) > 14:
+                
+                #try decoding for UTF8 works most of the time
+                try:
+                    message = bMessage.decode("utf-8")
+                except UnicodeDecodeError:
+                    try:#if it failed, try to find the encoding
+                        message = message.decode(chardet.detect(bMessage)['encoding'])
+                    except Exception:
+                        raise BadRequestException('From {} can\'t decode request:\r\n'.format(str(addr),bMessage))
+                        
+                logMessage('info', str(addr) + '\r\n' + message)
+
+
                 lines = message.split('\r\n')
                 #first line is the type of request
                 reqLine = lines[0].strip().split(' ')
@@ -212,7 +223,7 @@ try:
                 else:
                     raise BadRequestException('Don\'t understand what was requested.')
             else:
-                raise BadRequestException('Invalid request')
+                raise BadRequestException('{} Request too small:{}'.format(str(addr),str(bMessage)))
             
             #fill the request dictionary
             headerValueSplit = ': '
@@ -270,7 +281,12 @@ try:
                 #it's not a redirect then extract header, body from request
 				
                 #TODO - GET
-                
+                if requestType == 'GET':
+                    if requestedPath == '/favicon.ico':
+                        #just ignore and proceed
+                        connectionSocket.close()
+                        continue
+                        
                 #TODO - POST
                 if requestType == 'POST':
                     #get the message body?
@@ -279,8 +295,6 @@ try:
                         if requestBodySize > 0:
                             requestBody = b''
                             try:
-                                #to not hold the connection if it fails to receive the rest
-                                connectionSocket.settimeout(1)
                                 #read the rest of the socket
                                 requestBody = connectionSocket.recv(65536)
                                 
@@ -301,16 +315,13 @@ try:
                             except Exception as Exc:
                                 logMessage('error', 'Decode txt body: {}'.format(str(Exc)))
                                 
-                            connectionSocket.settimeout(0)
+                            # connectionSocket.settimeout(0)
 
-            header += 'content-type: ' + responseType + '\r\n'
+            header += 'content-type: ' + gResponseType + '\r\n'
             header += 'Server: ' + serverSoftware + '\r\nConnection: Close\r\n'
-            #add size to header
-            if responseLen != '':
-                header += 'content-length: ' + responseLen + '\r\n'
             #send this part already
-            connectionSocket.send(bytes(header,'UTF8'))
-            header = ''
+            #connectionSocket.send(bytes(header,'UTF8'))
+            #header = ''
             
             if args.cmd:
                 runNow = True
@@ -331,8 +342,12 @@ try:
                     result = result.replace('\n','<br>')
                     cmdR = cmdR.format(args.cmd,args.cmd,str(datetime.now()), result)
                     response = bytes(cmdR,'UTF8')
-                    #content should only exist when it's not here, so there you go
-                    header = 'content-length: ' + str(len(response)) + '\r\n'
+                    gResponse = response
+                    gResponseLen = str(len(response))
+        
+            #add size to header
+            if gResponseLen != '':
+                header += 'content-length: ' + gResponseLen + '\r\n'
         
             #Send the content of the requested file to the client
             data = bytes(header +'\r\n','UTF8')
@@ -341,8 +356,11 @@ try:
                 
             connectionSocket.send(data)
             connectionSocket.close()
-        except IOError:
-            logMessage('error', 'IO: {}'.format(str(Exc)))
+        except IOError as Exc:
+            msgAdd = 'NO ADDRESS'
+            if addr:
+                msgAdd = str(addr)
+            logMessage('error', 'IO:{} {}'.format(msgAdd,str(Exc)))
         except BadRequestException as Exc:
             logMessage('error', 'Bad request: {}'.format(str(Exc)))
         except NotAllowedException as Exc:
@@ -350,7 +368,10 @@ try:
         except ConnectionResetError:
             logMessage('error', 'Closed connection before reply: {}'.format(str(addr)))
         except Exception as Exc:
-            logMessage('error', 'Exception: {}'.format(str(Exc)))
+            msgAdd = 'NO ADDRESS'
+            if addr:
+                msgAdd = str(addr)
+            logMessage('error', 'Exception: {} - {} '.format(msgAdd,traceback.format_exception(etype=type(Exc), value=Exc, tb=Exc.__traceback__)) )
         finally:
             connectionSocket.close()
 
